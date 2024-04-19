@@ -1,0 +1,17 @@
+[project]
+name = "HoiSaAI"
+version = "0.0.2"
+authors = [
+  { name="Mike Mo Shun Cheng", email="u3568882@connect.hku.hk" },
+]
+description = "HoiSaAI is an open-source artificial intelligence (AI) project designed to harness the power of distributed computing for solving complex problems efficiently"
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/mikecheng18/hoisaai"
+Issues = "https://github.com/mikecheng18/hoisaai/issues"
