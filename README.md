@@ -33,8 +33,8 @@ To cite this repository:
     hoisaai,
     author = {Mike Mo Shun Cheng},
     title = {HoiSaAI},
-    url = {http://github.com/mike-cheng-11-18/hoisaai},
-    version = {0.0.0},
+    url = {https://github.com/mikecheng18/hoisaai},
+    version = {0.0.2},
     year = {2024},
 }
 ```
