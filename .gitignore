@@ -1,0 +1,6 @@
+# Data
+*.csv
+
+# Python
+__pycache__/
+*.ipynb
