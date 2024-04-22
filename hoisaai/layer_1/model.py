@@ -199,4 +199,4 @@ class StatefulTensor(
     def transform(
         self,
     ) -> typing.Iterator[typing.Any]:
-        raise NotImplementedError()
+        yield self.x
