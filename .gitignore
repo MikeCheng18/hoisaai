@@ -1,7 +1,10 @@
 TODO
+.DS_Store
+.vscode/
 
 # Data
 *.csv
+*.bin
 
 # Python
 __pycache__/
