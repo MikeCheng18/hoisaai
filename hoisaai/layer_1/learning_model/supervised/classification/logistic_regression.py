@@ -80,6 +80,7 @@ class LogisticRegression(
             minimum_value=-limit,
             maximum_value=limit,
             datatype=Tensor.DataType.FLOAT32,
+            require_gradient=False,
             seed=self.seed,
         )
         for _ in range(self.maximum_iteration):

@@ -9,7 +9,7 @@ from hoisaai.layer_1.learning_model.supervised.regression.linear import (
 )
 
 
-class TestKNearestNeighborsRegressor(unittest.TestCase):
+class TestLinear(unittest.TestCase):
     def test_elastic_net(self):
         lr: ElasticNetRegression = ElasticNetRegression(
             elastic_lambda=0.5,

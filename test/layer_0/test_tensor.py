@@ -5,22 +5,194 @@ import jax
 import jaxlib.xla_extension
 import numpy
 
-from hoisaai.layer_0.tensor import Tensor, tensor_casting
+from hoisaai.layer_0.tensor import (
+    Add,
+    ExpandDimension,
+    Hook,
+    Inverse,
+    MatrixMultiplication,
+    Multiply,
+    Negative,
+    Tensor,
+    Transpose,
+    jax_casting,
+)
+
+
+class TestHook(unittest.TestCase):
+    def dummy(self, tensor: Tensor) -> Tensor:
+        return tensor
+
+    def test_init(self):
+        tensor: Tensor = Tensor.array(
+            [1, 2, 3], datatype=Tensor.DataType.INT32, require_gradient=True
+        )
+        hook = Hook(
+            tensor=tensor,
+            gradient_function=self.dummy,
+        )
+        self.assertIsInstance(hook, Hook)
+        self.assertListEqual(
+            hook.tensor.tolist(),
+            [1, 2, 3],
+        )
+
+
+class TestFunction(unittest.TestCase):
+    def test_expand_dimension(self):
+        expand_dimension: ExpandDimension = ExpandDimension(-1)
+        tensor: Tensor = Tensor.array(
+            [1, 2, 3], datatype=Tensor.DataType.INT32, require_gradient=True
+        )
+        self.assertListEqual(
+            expand_dimension(tensor).tolist(),
+            [[1], [2], [3]],
+        )
+        self.assertListEqual(
+            expand_dimension.backward(tensor).tolist(),
+            [1, 2, 3],
+        )
+
+    def test_inverse(self):
+        inverse: Inverse = Inverse()
+        tensor: Tensor = Tensor.array(
+            [1, 2, 3], datatype=Tensor.DataType.INT32, require_gradient=True
+        )
+        self.assertListEqual(
+            inverse(tensor).tolist(),
+            [1.0, 0.5, 0.3333333432674408],
+        )
+        self.assertListEqual(
+            inverse.backward(tensor).tolist(),
+            [-1.0, -0.5, -0.3333333432674408],
+        )
+
+    def test_negative(self):
+        inverse: Negative = Negative()
+        tensor: Tensor = Tensor.array(
+            [1, 2, 3], datatype=Tensor.DataType.INT32, require_gradient=True
+        )
+        self.assertListEqual(
+            inverse(tensor).tolist(),
+            [-1, -2, -3],
+        )
+        self.assertListEqual(
+            inverse.backward(tensor).tolist(),
+            [-1, -2, -3],
+        )
+
+    def test_transpose(self):
+        inverse: Transpose = Transpose(1, 0)
+        tensor: Tensor = Tensor.array(
+            [[1], [2], [3]], datatype=Tensor.DataType.INT32, require_gradient=True
+        )
+        self.assertListEqual(
+            inverse(tensor).tolist(),
+            [[1, 2, 3]],
+        )
+        self.assertListEqual(
+            inverse.backward(
+                Tensor.array(
+                    [[1, 2, 3]], datatype=Tensor.DataType.INT32, require_gradient=True
+                )
+            ).tolist(),
+            [[1], [2], [3]],
+        )
+
+
+class TestOperation(unittest.TestCase):
+    def test_add(self):
+        add: Add = Add()
+        tensor1: Tensor = Tensor.array(
+            [1, 2, 3], datatype=Tensor.DataType.INT32, require_gradient=True
+        )
+        tensor2: Tensor = Tensor.array(
+            [4, 5, 6], datatype=Tensor.DataType.INT32, require_gradient=True
+        )
+        output: Tensor = add(tensor1, tensor2)
+        self.assertListEqual(
+            output.tolist(),
+            [5, 7, 9],
+        )
+        self.assertEqual(
+            len(output.hook),
+            2,
+        )
+        self.assertListEqual(
+            output.hook[0].gradient_function(output.hook[0].tensor).tolist(),
+            [1, 2, 3],
+        )
+        self.assertListEqual(
+            output.hook[1].gradient_function(output.hook[1].tensor).tolist(),
+            [4, 5, 6],
+        )
+
+    def test_matrix_multiplication(self):
+        matrix_multiplication: MatrixMultiplication = MatrixMultiplication()
+        tensor1: Tensor = Tensor.array(
+            [[1, 2], [3, 4]], datatype=Tensor.DataType.INT32, require_gradient=True
+        )
+        tensor2: Tensor = Tensor.array(
+            [[5, 6], [7, 8]], datatype=Tensor.DataType.INT32, require_gradient=True
+        )
+        output: Tensor = matrix_multiplication(tensor1, tensor2)
+        self.assertListEqual(
+            output.tolist(),
+            [[19, 22], [43, 50]],
+        )
+        self.assertEqual(
+            len(output.hook),
+            2,
+        )
+        self.assertListEqual(
+            output.hook[0].gradient_function(output.hook[0].tensor).tolist(),
+            [[17, 23], [39, 53]],
+        )
+        self.assertListEqual(
+            output.hook[1].gradient_function(output.hook[1].tensor).tolist(),
+            [[26, 30], [38, 44]],
+        )
+
+    def test_multiply(self):
+        multiply: Multiply = Multiply()
+        tensor1: Tensor = Tensor.array(
+            [[1, 2], [3, 4]], datatype=Tensor.DataType.INT32, require_gradient=True
+        )
+        tensor2: Tensor = Tensor.array(
+            [[5, 6], [7, 8]], datatype=Tensor.DataType.INT32, require_gradient=True
+        )
+        output: Tensor = multiply(tensor1, tensor2)
+        self.assertListEqual(
+            output.tolist(),
+            [[5, 12], [21, 32]],
+        )
+        self.assertEqual(
+            len(output.hook),
+            2,
+        )
+        self.assertListEqual(
+            output.hook[0].gradient_function(output.hook[0].tensor).tolist(),
+            [[5, 12], [21, 32]],
+        )
+        self.assertListEqual(
+            output.hook[1].gradient_function(output.hook[1].tensor).tolist(),
+            [[5, 12], [21, 32]],
+        )
 
 
 class TestTensor(unittest.TestCase):
-    def test_tensor_casting(self):
+    def test_jax_casting(self):
         # Tensor
-        result = tensor_casting(x=Tensor(x=numpy.array([1, 2, 3])))
+        result = jax_casting(x=Tensor(x=numpy.array([1, 2, 3])))
         self.assertIsInstance(result, jaxlib.xla_extension.ArrayImpl)
         # Numpy
-        result = tensor_casting(x=numpy.array([1, 2, 3]))
+        result = jax_casting(x=numpy.array([1, 2, 3]))
         self.assertIsInstance(result, jaxlib.xla_extension.ArrayImpl)
         # Int
-        result = tensor_casting(x=1)
+        result = jax_casting(x=1)
         self.assertIsInstance(result, int)
         # Float
-        result = tensor_casting(x=1.0)
+        result = jax_casting(x=1.0)
         self.assertIsInstance(result, float)
 
     def test_tensor_init(self):
@@ -34,15 +206,42 @@ class TestTensor(unittest.TestCase):
         self.assertEqual(tensor.shape, (3,))
 
     def test_tensor_add(self):
+        tensor1: Tensor = Tensor.array(
+            [1, 2, 3],
+            datatype=Tensor.DataType.INT32,
+            require_gradient=True,
+        )
+        tensor2: Tensor = Tensor.array(
+            [4, 5, 6],
+            datatype=Tensor.DataType.INT32,
+            require_gradient=True,
+        )
+        output: Tensor = tensor1 + tensor2
         self.assertListEqual(
-            (
-                Tensor.array([1, 2, 3], datatype=Tensor.DataType.INT32)
-                + Tensor.array([1, 2, 3], datatype=Tensor.DataType.INT32)
-            ).tolist(),
-            [2, 4, 6],
+            output.tolist(),
+            [5, 7, 9],
+        )
+        output.backward()
+        self.assertListEqual(
+            output.gradient.tolist(),
+            [1, 1, 1],
         )
         self.assertListEqual(
-            (Tensor.array([1, 2, 3], datatype=Tensor.DataType.INT32) + 1).tolist(),
+            tensor1.gradient.tolist(),
+            [1, 1, 1],
+        )
+        self.assertListEqual(
+            tensor2.gradient.tolist(),
+            [1, 1, 1],
+        )
+        tensor1: Tensor = Tensor.array(
+            [1, 2, 3],
+            datatype=Tensor.DataType.INT32,
+            require_gradient=True,
+        )
+        output: Tensor = tensor1 + 1
+        self.assertListEqual(
+            output.tolist(),
             [2, 3, 4],
         )
 
@@ -267,12 +466,35 @@ class TestTensor(unittest.TestCase):
         )
 
     def test_tensor_mul(self):
+        tensor1: Tensor = Tensor.array(
+            [1, 2, 3],
+            datatype=Tensor.DataType.INT32,
+            require_gradient=True,
+        )
+        tensor2: Tensor = Tensor.array(
+            [1, 2, 3],
+            datatype=Tensor.DataType.INT32,
+            require_gradient=True,
+        )
+        output: Tensor = tensor1 * tensor2
         self.assertListEqual(
-            (
-                Tensor.array([1, 2, 3], datatype=Tensor.DataType.INT32)
-                * Tensor.array([1, 2, 3], datatype=Tensor.DataType.INT32)
-            ).tolist(),
+            output.tolist(),
             [1, 4, 9],
+        )
+        output: Tensor = output.backward()
+        self.assertListEqual(
+            tensor1.gradient.tolist(),
+            [1.0, 2.0, 3.0],
+        )
+        tensor1: Tensor = Tensor.array(
+            [1, 2, 3],
+            datatype=Tensor.DataType.INT32,
+            require_gradient=True,
+        )
+        output: Tensor = tensor1 * 2
+        self.assertListEqual(
+            output.tolist(),
+            [2, 4, 6],
         )
 
     def test_tensor_ne(self):
@@ -410,29 +632,67 @@ class TestTensor(unittest.TestCase):
         )
 
     def test_tensor_sub(self):
-        self.assertListEqual(
-            (
-                Tensor.array([3, 2, 1], datatype=Tensor.DataType.INT32)
-                - Tensor.array([1, 2, 3], datatype=Tensor.DataType.INT32)
-            ).tolist(),
-            [2, 0, -2],
+        tensor1: Tensor = Tensor.array(
+            [1, 2, 3],
+            datatype=Tensor.DataType.INT32,
+            require_gradient=True,
         )
+        tensor2: Tensor = Tensor.array(
+            [1, 2, 3],
+            datatype=Tensor.DataType.INT32,
+            require_gradient=True,
+        )
+        output: Tensor = tensor1 - tensor2
         self.assertListEqual(
-            (Tensor.array([1, 2, 3], datatype=Tensor.DataType.INT32) - 1).tolist(),
-            [0, 1, 2],
+            output.tolist(),
+            [0, 0, 0],
+        )
+        output: Tensor = output.backward()
+        self.assertListEqual(
+            tensor1.gradient.tolist(),
+            [1, 1, 1],
+        )
+        tensor1: Tensor = Tensor.array(
+            [1, 2, 3],
+            datatype=Tensor.DataType.INT32,
+            require_gradient=True,
+        )
+        output: Tensor = tensor1 - 2
+        self.assertListEqual(
+            output.tolist(),
+            [-1, 0, 1],
         )
 
     def test_tensor_truediv(self):
-        self.assertListEqual(
-            (
-                Tensor.array([3, 2, 3], datatype=Tensor.DataType.INT32)
-                / Tensor.array([1, 2, 3], datatype=Tensor.DataType.INT32)
-            ).tolist(),
-            [3.0, 1.0, 1.0],
+        tensor1: Tensor = Tensor.array(
+            [1, 2, 3],
+            datatype=Tensor.DataType.INT32,
+            require_gradient=True,
         )
+        tensor2: Tensor = Tensor.array(
+            [1, 2, 3],
+            datatype=Tensor.DataType.INT32,
+            require_gradient=True,
+        )
+        output: Tensor = tensor1 / tensor2
         self.assertListEqual(
-            (Tensor.array([17, 13, 11], datatype=Tensor.DataType.INT32) / 2.0).tolist(),
-            [8.5, 6.5, 5.5],
+            output.tolist(),
+            [1.0, 1.0, 1.0],
+        )
+        output: Tensor = output.backward()
+        self.assertListEqual(
+            tensor1.gradient.tolist(),
+            [1.0, 0.5, 0.3333333432674408],
+        )
+        tensor1: Tensor = Tensor.array(
+            [1, 2, 3],
+            datatype=Tensor.DataType.INT32,
+            require_gradient=True,
+        )
+        output: Tensor = tensor1 / 2
+        self.assertListEqual(
+            output.tolist(),
+            [0.5, 1.0, 1.5],
         )
 
     def test_all(self):
@@ -754,23 +1014,51 @@ class TestTensor(unittest.TestCase):
     def test_random_integer(self):
         self.assertListEqual(
             Tensor.random_integer(
+                shape=(2, 2),
                 minimum_value=0,
                 maximum_value=10,
-                shape=(2, 2),
                 datatype=Tensor.DataType.INT16,
+                require_gradient=False,
                 seed=0,
             ).tolist(),
             [[8, 8], [0, 2]],
         )
         self.assertListEqual(
             Tensor.random_integer(
+                shape=(2, 2),
                 minimum_value=0,
                 maximum_value=10,
-                shape=(2, 2),
                 datatype=Tensor.DataType.INT16,
+                require_gradient=False,
                 seed=1,
             ).tolist(),
             [[4, 6], [2, 7]],
+        )
+
+    def test_random_normal(self):
+        self.assertListEqual(
+            Tensor.random_normal(
+                shape=(2, 2),
+                datatype=Tensor.DataType.FLOAT32,
+                require_gradient=False,
+                seed=0,
+            ).tolist(),
+            [
+                [1.8160862922668457, -0.7548851370811462],
+                [0.3398890793323517, -0.5348353385925293],
+            ],
+        )
+        self.assertListEqual(
+            Tensor.random_normal(
+                shape=(2, 2),
+                datatype=Tensor.DataType.FLOAT32,
+                require_gradient=False,
+                seed=1,
+            ).tolist(),
+            [
+                [0.17269018292427063, -0.46084192395210266],
+                [1.2229712009429932, -0.07101909071207047],
+            ],
         )
 
     def test_random_uniform(self):
@@ -780,6 +1068,7 @@ class TestTensor(unittest.TestCase):
                 maximum_value=10,
                 shape=(2, 2),
                 datatype=Tensor.DataType.FLOAT32,
+                require_gradient=False,
                 seed=0,
             ).tolist(),
             [
@@ -793,6 +1082,7 @@ class TestTensor(unittest.TestCase):
                 maximum_value=10,
                 shape=(2, 2),
                 datatype=Tensor.DataType.FLOAT32,
+                require_gradient=False,
                 seed=1,
             ).tolist(),
             [
@@ -867,6 +1157,14 @@ class TestTensor(unittest.TestCase):
             [[1, 4], [9, 16]],
         )
 
+    def test_std(self):
+        self.assertListEqual(
+            Tensor.array([[1, 2, 3], [3, 4, 5]], datatype=Tensor.DataType.INT32)
+            .std(axis=1, keep_dimension=False)
+            .tolist(),
+             [0.8164966106414795, 0.8164966106414795],
+        )
+
     def test_sum(self):
         self.assertListEqual(
             Tensor.array([[1, 2], [3, 4]], datatype=Tensor.DataType.INT32)
@@ -899,6 +1197,14 @@ class TestTensor(unittest.TestCase):
             .swapaxes(axis1=0, axis2=1)
             .tolist(),
             [[1, 3], [2, 4]],
+        )
+
+    def test_transpose(self):
+        self.assertListEqual(
+            Tensor.array([[1], [2], [3]], datatype=Tensor.DataType.INT32)
+            .transpose(1, 0)
+            .tolist(),
+            [[1, 2, 3]],
         )
 
     def test_tolist(self):

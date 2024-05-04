@@ -93,6 +93,7 @@ class DecisionTree(SupervisedLearningModel):
                     minimum_value=0,
                     maximum_value=in_sample.shape[-2],  # In-sample observation
                     datatype=Tensor.DataType.INT32,
+                    require_gradient=False,
                     seed=seed,
                 )
             ).expand_dimension(
@@ -463,6 +464,7 @@ class DecisionTree(SupervisedLearningModel):
                         # Target and Feature
                         maximum_value=in_sample.shape[-1],
                         datatype=Tensor.DataType.INT16,
+                        require_gradient=False,
                         seed=seed,
                     ),
                 ],
