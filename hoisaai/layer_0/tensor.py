@@ -1,5 +1,9 @@
+"""This module implements a tensor."""
+
+# pylint: disable=too-many-lines
 from __future__ import annotations
 
+import abc
 import dataclasses
 import enum
 import os
@@ -10,54 +14,41 @@ import jaxlib.xla_extension
 import numpy
 
 
-def jax_casting(
-    x: Tensor | jaxlib.xla_extension.ArrayImpl | int | float,
-) -> jaxlib.xla_extension.ArrayImpl | int | float:
-    if isinstance(x, Tensor):
-        return x.x
-    elif isinstance(x, numpy.ndarray):
-        return jax.numpy.array(x)
-    return x
-
-
-def tensor_casting(x: typing.Any) -> Tensor:
-    if isinstance(x, Tensor):
-        return x
-    return Tensor.array([x], datatype=Tensor.DataType.FLOAT32)
-
-
-@dataclasses.dataclass
-class Hook(object):
-    tensor: Tensor
-    gradient_function: typing.Callable[
-        [
-            # gradient
-            Tensor,
-        ],
-        Tensor,
-    ]
-
-
 class Function(object):
+    """Function."""
+
     def __init__(self) -> None:
         pass
 
+    @abc.abstractmethod
     def backward(
         self,
+        tensor: Tensor,
         gradient: Tensor,
     ) -> Tensor:
-        raise NotImplementedError()
+        """Backward function for backpropagation."""
+        raise NotImplementedError
 
+    @abc.abstractmethod
     def forward(
         self,
         tensor: Tensor,
     ):
-        raise NotImplementedError()
+        """Forward function."""
+        raise NotImplementedError
 
     def __call__(
         self,
         tensor: Tensor,
     ) -> Tensor:
+        """Add a hook if the tensor requires gradient.
+
+        :param tensor: The tensor to be processed.
+        :type tensor: Tensor
+
+        :return: The processed tensor.
+        :rtype: Tensor
+        """
         out: Tensor = self.forward(
             tensor=tensor,
         )
@@ -72,32 +63,36 @@ class Function(object):
 
 
 class ExpandDimension(Function):
+    """Expand the dimension of a tensor.
+
+    :param axis: The axis to be expanded.
+    :type axis: Tuple[int]
+    """
+
     def __init__(
         self,
         *axis: int,
     ) -> None:
         super().__init__()
         self.axis: typing.Tuple[int] = axis
-        self.tensor: Tensor = None
 
     def backward(
         self,
+        tensor: Tensor,
         gradient: Tensor,
     ) -> Tensor:
-        print("C" * 100)
-        print(gradient)
-        gradient = Tensor(
-            x=jax.numpy.reshape(a=gradient.x, newshape=self.tensor.shape),
+        return Tensor(
+            x=jax.numpy.reshape(
+                a=gradient.x,
+                newshape=tensor.shape,
+            ),
             require_gradient=False,
         )
-        print(gradient)
-        return gradient
 
     def forward(
         self,
         tensor: Tensor,
     ) -> Tensor:
-        self.tensor: Tensor = tensor
         return Tensor(
             x=jax.numpy.expand_dims(
                 a=tensor.x,
@@ -107,48 +102,102 @@ class ExpandDimension(Function):
         )
 
 
-class Inverse(Function):
-    def __init__(
-        self,
-    ) -> None:
-        super().__init__()
-        self.tensor: Tensor = None
+class Exponential(Function):
+    """Exponential function.
+
+    .. math:: f(x) = e^{x}
+    """
 
     def backward(
         self,
+        tensor: Tensor,
         gradient: Tensor,
     ) -> Tensor:
-        return -1.0 / (self.tensor.square()) * gradient
+        return Tensor(
+            x=gradient.x * tensor.x,
+            require_gradient=False,
+        )
 
     def forward(
         self,
         tensor: Tensor,
     ) -> Tensor:
-        self.tensor: Tensor = tensor
         return Tensor(
-            x=1.0 / tensor.x,
+            x=jax.numpy.exp(tensor.x),
             require_gradient=tensor.require_gradient,
         )
 
 
 class Negative(Function):
+    """Negative function."""
+
     def backward(
         self,
+        tensor: Tensor,
         gradient: Tensor,
     ) -> Tensor:
-        return -1.0 * gradient
+        return Tensor(
+            x=-(gradient.x),
+            require_gradient=False,
+        )
 
     def forward(
         self,
         tensor: Tensor,
     ) -> Tensor:
         return Tensor(
-            x=-tensor.x,
+            x=-(tensor.x),
             require_gradient=tensor.require_gradient,
         )
 
 
+class Power(Function):
+    """Power function.
+
+    :param exponent: The exponent.
+    :type exponent: float
+    """
+
+    def __init__(
+        self,
+        exponent: float,
+    ) -> None:
+        super().__init__()
+        self.exponent: float = float(exponent)
+
+    def backward(
+        self,
+        tensor: Tensor,
+        gradient: Tensor,
+    ) -> Tensor:
+        return Tensor(
+            x=gradient.x * self.exponent * (tensor.x ** (self.exponent - 1.0)),
+            require_gradient=False,
+        )
+
+    def forward(self, tensor: Tensor) -> Tensor:
+        return Tensor(
+            x=tensor.x**self.exponent,
+            require_gradient=tensor.require_gradient,
+        )
+
+
+class Inverse(Power):
+    """Inverse function."""
+
+    def __init__(
+        self,
+    ) -> None:
+        Power.__init__(self, -1.0)
+
+
 class Transpose(Function):
+    """Transpose function.
+
+    :param index: The index to be transposed.
+    :type index: Tuple[int]
+    """
+
     def __init__(
         self,
         *index: int,
@@ -158,11 +207,12 @@ class Transpose(Function):
 
     def backward(
         self,
+        tensor: Tensor,
         gradient: Tensor,
     ) -> Tensor:
         inverse = [0] * len(self.index)
-        for i, p in enumerate(self.index):
-            inverse[p] = i
+        for original_axis, current_axis in enumerate(self.index):
+            inverse[current_axis] = original_axis
         return Tensor(
             x=jax.numpy.transpose(
                 a=gradient.x,
@@ -184,107 +234,174 @@ class Transpose(Function):
         )
 
 
+@dataclasses.dataclass
+class Hook(object):
+    """Hook for backpropagation."""
+
+    tensor: Tensor
+    gradient_function: typing.Callable[
+        [
+            # gradient
+            Tensor,
+        ],
+        Tensor,
+    ]
+
+
 class Operation(object):
+    """Operation."""
+
     def __init__(self) -> None:
-        self.tensor1: Tensor = None
-        self.tensor2: Tensor = None
+        pass
 
-    def backward1(self, gradient: Tensor) -> Tensor:
-        raise NotImplementedError()
+    @abc.abstractmethod
+    def backward1(
+        self,
+        tensor: Tensor,
+        gradient: Tensor,
+    ) -> Tensor:
+        """Backward function for backpropagation."""
+        raise NotImplementedError
 
-    def backward2(self, gradient: Tensor) -> Tensor:
-        raise NotImplementedError()
+    @abc.abstractmethod
+    def backward2(
+        self,
+        tensor: Tensor,
+        gradient: Tensor,
+    ) -> Tensor:
+        """Backward function for backpropagation."""
+        raise NotImplementedError
 
     def forward(
         self,
         tensor1: Tensor,
-        tensor2: Tensor,
+        tensor2: float | int | Tensor,
     ):
-        self.tensor1: Tensor = tensor1
-        self.tensor2: Tensor = tensor2
+        """Forward function."""
+        raise NotImplementedError
 
     def __call__(
         self,
         tensor1: Tensor,
-        tensor2: Tensor,
+        tensor2: float | int | Tensor,
     ) -> Tensor:
+        """Add a hook if the tensor requires gradient."""
         out: Tensor = self.forward(
             tensor1=tensor1,
             tensor2=tensor2,
         )
-        if tensor1.require_gradient:
-            out.hook.append(
-                Hook(
-                    tensor1,
-                    self.backward1,
+        if isinstance(tensor1, Tensor):
+            if tensor1.require_gradient:
+                out.hook.append(
+                    Hook(
+                        tensor1,
+                        self.backward1,
+                    )
                 )
-            )
-        if tensor2.require_gradient:
-            out.hook.append(
-                Hook(
-                    tensor2,
-                    self.backward2,
+        if isinstance(tensor2, Tensor):
+            if tensor2.require_gradient:
+                out.hook.append(
+                    Hook(
+                        tensor2,
+                        self.backward2,
+                    )
                 )
-            )
         return out
 
 
 class Add(Operation):
+    """Add operation"""
+
     @staticmethod
-    def backward(gradient: Tensor, tensor: Tensor) -> Tensor:
-        print("A" * 100)
-        print(gradient)
-        for _ in range(gradient.number_of_dimension - tensor.number_of_dimension):
-            gradient = gradient.mean(
-                axis=0,
-                keep_dimension=False,
-            )
-        # Sum across broadcasted (but non-added dims)
-        for i, dimension in enumerate(tensor.shape):
-            if dimension == 1:
-                gradient = gradient.mean(
-                    axis=i,
-                    keep_dimension=True,
-                )
-        print(gradient)
-        return gradient
+    def backward(
+        # pylint: disable=unused-argument
+        tensor: Tensor,
+        gradient: Tensor,
+    ) -> Tensor:
+        """Calculate the gradient of the addition operation."""
+        return Tensor(
+            x=gradient.x,
+            require_gradient=False,
+        )
 
-    def backward1(self, gradient: Tensor) -> Tensor:
-        return Add.backward(gradient=gradient, tensor=self.tensor1)
+    def backward1(
+        self,
+        tensor: Tensor,
+        gradient: Tensor,
+    ) -> Tensor:
+        return Add.backward(gradient=gradient, tensor=tensor)
 
-    def backward2(self, gradient: Tensor) -> Tensor:
-        return Add.backward(gradient=gradient, tensor=self.tensor2)
+    def backward2(
+        self,
+        tensor: Tensor,
+        gradient: Tensor,
+    ) -> Tensor:
+        return Add.backward(gradient=gradient, tensor=tensor)
 
     def forward(
         self,
         tensor1: Tensor,
-        tensor2: Tensor,
+        tensor2: float | int | Tensor,
     ) -> Tensor:
-        Operation.forward(self, tensor1, tensor2)
+        operand2: typing.Any = tensor2.x if isinstance(tensor2, Tensor) else tensor2
         return Tensor(
-            x=tensor1.x + tensor2.x,
-            require_gradient=tensor1.require_gradient or tensor2.require_gradient,
+            x=tensor1.x + operand2,
+            require_gradient=tensor1.require_gradient
+            or (tensor2.require_gradient if isinstance(tensor2, Tensor) else False),
         )
 
 
 class MatrixMultiplication(Operation):
-    def backward1(self, gradient: Tensor) -> Tensor:
-        gradient = Tensor(x=gradient @ self.tensor2.swapaxes(-1, -2))
-        return gradient
+    r"""Matrix multiplication operation.
+    
+    .. math::
+        t_{out} = t_{1} \cdot t_{2} \\
+        t_{out}[i, j] = \sum_{k=1}^{n} t_{1}[i, k] \times t_{2}[k, j]
+        
+    """
 
-    def backward2(self, gradient: Tensor) -> Tensor:
-        print("B" * 100)
-        print(gradient)
-        gradient = Tensor(x=self.tensor1.swapaxes(-1, -2) @ gradient)
-        print(gradient)
-        return gradient
+    def __init__(self) -> None:
+        super().__init__()
+        self.tensor1: Tensor = None
+        self.tensor2: Tensor = None
+
+    def backward1(
+        self,
+        tensor: Tensor,
+        gradient: Tensor,
+    ) -> Tensor:
+        return Tensor(
+            x=gradient.x
+            @ jax.numpy.swapaxes(
+                a=self.tensor2.x,
+                axis1=-1,
+                axis2=-2,
+            ),
+            require_gradient=False,
+        )
+
+    def backward2(
+        self,
+        tensor: Tensor,
+        gradient: Tensor,
+    ) -> Tensor:
+        return Tensor(
+            x=jax.numpy.swapaxes(
+                a=self.tensor1.x,
+                axis1=-1,
+                axis2=-2,
+            )
+            @ gradient.x,
+            require_gradient=False,
+        )
 
     def forward(
         self,
         tensor1: Tensor,
-        tensor2: Tensor,
+        tensor2: float | int | Tensor,
     ) -> Tensor:
-        Operation.forward(self, tensor1, tensor2)
+        self.tensor1: Tensor = tensor1
+        self.tensor2: Tensor = tensor2
         return Tensor(
             x=tensor1.x @ tensor2.x,
             require_gradient=tensor1.require_gradient or tensor2.require_gradient,
@@ -292,69 +409,153 @@ class MatrixMultiplication(Operation):
 
 
 class Multiply(Operation):
-    @staticmethod
-    def backward(gradient: Tensor, tensor1: Tensor, tensor2: Tensor) -> Tensor:
-        gradient = gradient * tensor2
-        for _ in range(gradient.number_of_dimension - tensor1.number_of_dimension):
-            gradient = gradient.sum(
-                axis=0,
-                keep_dimension=False,
-            )
-        # Sum across broadcasted (but non-added dims)
-        for i, dimension in enumerate(tensor1.shape):
-            if dimension == 1:
-                gradient = gradient.sum(
-                    axis=i,
-                    keep_dimension=True,
-                )
-        return gradient
+    """Multiply operation."""
 
-    def backward1(self, gradient: Tensor) -> Tensor:
-        return self.backward(
-            gradient=gradient,
-            tensor1=self.tensor1,
-            tensor2=self.tensor2,
+    def __init__(self) -> None:
+        super().__init__()
+        self.tensor1: Tensor = None
+        self.tensor2: Tensor = None
+
+    @staticmethod
+    def backward(
+        gradient: Tensor,
+        other: float | int | Tensor,
+    ) -> Tensor:
+        """Calculate the gradient of the multiplication operation."""
+        return Tensor(
+            x=gradient.x * (other.x if isinstance(other, Tensor) else other),
+            require_gradient=False,
         )
 
-    def backward2(self, gradient: Tensor) -> Tensor:
+    def backward1(
+        self,
+        tensor: Tensor,
+        gradient: Tensor,
+    ) -> Tensor:
         return self.backward(
             gradient=gradient,
-            tensor1=self.tensor2,
-            tensor2=self.tensor1,
+            other=self.tensor2,
+        )
+
+    def backward2(
+        self,
+        tensor: Tensor,
+        gradient: Tensor,
+    ) -> Tensor:
+        return self.backward(
+            gradient=gradient,
+            other=self.tensor1,
         )
 
     def forward(
         self,
         tensor1: Tensor,
-        tensor2: Tensor,
+        tensor2: float | int | Tensor,
     ) -> Tensor:
-        Operation.forward(self, tensor1, tensor2)
+        self.tensor1: Tensor = tensor1
+        self.tensor2: Tensor = tensor2
+        operand2: typing.Any = tensor2.x if isinstance(tensor2, Tensor) else tensor2
         return Tensor(
-            x=tensor1.x * tensor2.x,
-            require_gradient=tensor1.require_gradient or tensor2.require_gradient,
+            x=tensor1.x * operand2,
+            require_gradient=tensor1.require_gradient
+            or (tensor2.require_gradient if isinstance(tensor2, Tensor) else False),
+        )
+
+
+class Where(Operation):
+    """Where operation.
+
+    :param condition: The condition.
+    :type condition: Tensor
+    """
+
+    def __init__(
+        self,
+        condition: Tensor,
+    ) -> None:
+        super().__init__()
+        self.condition: Tensor = condition
+
+    def backward1(
+        self,
+        tensor: Tensor,
+        gradient: Tensor,
+    ) -> Tensor:
+        return Tensor(
+            x=gradient.x * jax.numpy.where(self.condition.x, 1.0, 0.0),
+            require_gradient=False,
+        )
+
+    def backward2(
+        self,
+        tensor: Tensor,
+        gradient: Tensor,
+    ) -> Tensor:
+        return Tensor(
+            x=gradient.x * jax.numpy.where(self.condition.x, 0.0, 1.0),
+            require_gradient=False,
+        )
+
+    def forward(
+        self,
+        tensor1: Tensor,
+        tensor2: float | int | Tensor,
+    ) -> Tensor:
+        operand1: typing.Any = tensor1.x if isinstance(tensor1, Tensor) else tensor1
+        operand2: typing.Any = tensor2.x if isinstance(tensor2, Tensor) else tensor2
+        return Tensor(
+            x=jax.numpy.where(self.condition.x, operand1, operand2),
+            require_gradient=(
+                tensor1.require_gradient if isinstance(tensor1, Tensor) else False
+            )
+            or (tensor2.require_gradient if isinstance(tensor2, Tensor) else False),
         )
 
 
 class Tensor(object):
-    class DataType(enum.Enum):
-        BOOL: jax.numpy.dtype = jax.numpy.bool
-        INT16: jax.numpy.dtype = jax.numpy.int16
-        INT32: jax.numpy.dtype = jax.numpy.int32
-        INT64: jax.numpy.dtype = jax.numpy.int64
-        FLOAT16: jax.numpy.dtype = jax.numpy.float16
-        FLOAT32: jax.numpy.dtype = jax.numpy.float32
-        FLOAT64: jax.numpy.dtype = jax.numpy.float64
+    """This is a class representing a tensor.
 
-    class Value(enum.Enum):
-        NAN: int | float = jax.numpy.nan
-        INF: int | float = jax.numpy.inf
+    :param x: The tensor.
+    :type x: jaxlib.xla_extension.ArrayImpl | numpy.ndarray | Tensor
+    :param require_gradient: Whether the tensor requires gradient.
+    :type require_gradient: bool, default=False
+    :param hook: The hook for backpropagation.
+    :type hook: List[Hook], optional
+    """
+
+    class DataType(enum.Enum):
+        """Data type of a tensor."""
+
+        BOOL: jax.numpy.dtype = jax.numpy.bool
+        """Boolean."""
+        INT8: jax.numpy.dtype = jax.numpy.int8
+        """8-bit integer."""
+        INT16: jax.numpy.dtype = jax.numpy.int16
+        """16-bit integer."""
+        INT32: jax.numpy.dtype = jax.numpy.int32
+        """32-bit integer."""
+        INT64: jax.numpy.dtype = jax.numpy.int64
+        """64-bit integer."""
+        FLOAT16: jax.numpy.dtype = jax.numpy.float16
+        """16-bit floating point."""
+        FLOAT32: jax.numpy.dtype = jax.numpy.float32
+        """32-bit floating point."""
+        FLOAT64: jax.numpy.dtype = jax.numpy.float64
+        """64-bit floating point."""
+
+    class Constant(enum.Enum):
+        """Constant value."""
+
+        NAN: float | int = jax.numpy.nan
+        """Not a number."""
+        INF: float | int = jax.numpy.inf
+        """Infinity."""
 
     def __init__(
         self,
         x: Tensor | numpy.ndarray | jaxlib.xla_extension.ArrayImpl,
         require_gradient: bool = False,
         hook: typing.List[Hook] = None,
-        pair: Tensor = None,
     ) -> None:
         self.x: jaxlib.xla_extension.ArrayImpl = None
         self.hook: typing.List[Hook] = hook if hook is not None else []
@@ -362,29 +563,20 @@ class Tensor(object):
         self.gradient: Tensor = None
         if isinstance(x, Tensor):
             self.x: jaxlib.xla_extension.ArrayImpl = x.x
-            self.hook: typing.List[Hook] = x.hook
-            self.gradient: Tensor = x.gradient
-            self.require_gradient: bool = x.require_gradient
         elif isinstance(x, jaxlib.xla_extension.ArrayImpl):
             self.x = jax.numpy.copy(x)
         elif isinstance(x, numpy.ndarray):
             self.x = jax.numpy.array(x)
-        elif isinstance(x, int) or isinstance(x, float) or isinstance(self.x, bool):
-            self.x = jax.numpy.full(
-                shape=pair.shape,
-                fill_value=x,
-                dtype=pair.datatype.value,
-            )
         assert isinstance(self.x, jaxlib.xla_extension.ArrayImpl), type(self.x)
 
     def _repr_html_(self) -> str:
-        return str(self.x)
+        return f"shape: {str(self.shape)}<br>{jax.numpy.array_str(a=self.x, max_line_width=128,precision=4,suppress_small=True,)}"
 
     def __add__(
         self,
-        other: Tensor | int | float,
+        other: float | int | Tensor,
     ) -> Tensor:
-        return Add()(self, tensor_casting(x=other))
+        return Add()(self, other)
 
     def __bool__(self) -> bool:
         assert self.x.size == 1, self.x
@@ -392,33 +584,48 @@ class Tensor(object):
 
     def __eq__(
         self,
-        other: Tensor | int | float,
+        other: float | int | Tensor,
     ) -> Tensor:
-        return Tensor(x=self.x == jax_casting(x=other))
+        return Tensor(
+            x=self.x == (other.x if isinstance(other, Tensor) else other),
+            require_gradient=False,
+        )
 
     def __floordiv__(
         self,
-        other: Tensor | int,
+        other: int | Tensor,
     ) -> Tensor:
-        return Tensor(x=self.x // jax_casting(x=other))
+        return Tensor(
+            x=self.x // (other.x if isinstance(other, Tensor) else other),
+            require_gradient=False,
+        )
 
     def __ge__(
         self,
-        other: Tensor | int | float,
+        other: float | int | Tensor,
     ) -> Tensor:
-        return Tensor(x=self.x >= jax_casting(x=other))
+        return Tensor(
+            x=self.x >= (other.x if isinstance(other, Tensor) else other),
+            require_gradient=False,
+        )
 
     def __gt__(
         self,
-        other: Tensor | int | float,
+        other: float | int | Tensor,
     ) -> Tensor:
-        return Tensor(x=self.x > jax_casting(x=other))
+        return Tensor(
+            x=self.x > (other.x if isinstance(other, Tensor) else other),
+            require_gradient=False,
+        )
 
     def __getitem__(
         self,
         *args,
     ) -> Tensor:
-        return Tensor(x=self.x.__getitem__(*args))
+        return Tensor(
+            x=self.x.__getitem__(*args),
+            require_gradient=False,
+        )
 
     def __float__(self) -> float:
         assert self.x.size == 1, self.x
@@ -426,45 +633,49 @@ class Tensor(object):
 
     def __iadd__(
         self,
-        other: Tensor | int | float,
-    ) -> Tensor:
-        self: Tensor = Add()(self, tensor_casting(x=other))
-        return self
+        other: float | int | Tensor,
+    ) -> None:
+        return Add()(self, other)
 
     def __int__(self) -> int:
         assert self.x.size == 1, self.x
         return int(self.x)
 
-    def __imul__(self, other: Tensor | int | float) -> Tensor:
-        self: Tensor = Multiply()(self, tensor_casting(x=other))
+    def __imul__(self, other: float | int | Tensor) -> Tensor:
+        self: Tensor = Multiply()(self, other)
         return self
 
-    def __ipow__(self, other: Tensor | int | float) -> Tensor:
-        self.x **= jax_casting(x=other)
-        return self
+    def __ipow__(self, other: float | int | Tensor) -> Tensor:
+        return Tensor(
+            x=self.x ** (other.x if isinstance(other, Tensor) else other),
+            require_gradient=False,
+        )
 
-    def __isub__(self, other: Tensor | int | float) -> Tensor:
-        self: Tensor = Add()(self, Negative()(tensor_casting(x=other)))
-        return self
+    def __isub__(self, other: float | int | Tensor) -> Tensor:
+        return Add()(self, Negative()(other) if isinstance(other, Tensor) else -(other))
 
-    def __itruediv__(self, other: Tensor | int | float) -> Tensor:
-        self: Tensor = Multiply()(self, Inverse()(tensor_casting(x=other)))
-        return self
+    def __itruediv__(self, other: float | int | Tensor) -> Tensor:
+        return Multiply()(
+            self, Inverse()(other) if isinstance(other, Tensor) else (1.0 / other)
+        )
 
     def __invert__(self) -> Tensor:
-        return Tensor(x=jax.numpy.invert(self.x))
+        if self.datatype == Tensor.DataType.BOOL:
+            return Tensor(x=jax.numpy.invert(self.x), require_gradient=False)
+        else:
+            return -1.0 * self
 
     def __le__(
         self,
-        other: Tensor | int | float,
+        other: float | int | Tensor,
     ) -> Tensor:
-        return Tensor(x=self.x <= jax_casting(x=other))
+        return Tensor(x=self.x <= other, require_gradient=False)
 
     def __lt__(
         self,
         other: Tensor,
     ) -> Tensor:
-        return Tensor(x=self.x < jax_casting(x=other))
+        return Tensor(x=self.x < other, require_gradient=False)
 
     def __matmul__(
         self,
@@ -474,118 +685,165 @@ class Tensor(object):
 
     def __mod__(
         self,
-        other: Tensor | int,
+        other: int | Tensor,
     ) -> Tensor:
-        return Tensor(x=jax.numpy.remainder(self.x, jax_casting(x=other)))
+        return Tensor(x=self.x % other, require_gradient=False)
 
     def __mul__(
         self,
-        other: Tensor | int | float,
+        other: float | int | Tensor,
     ) -> Tensor:
-        return Multiply()(self, tensor_casting(x=other))
+        return Multiply()(self, other)
 
     def __ne__(
         self,
-        other: Tensor | int | float,
+        other: float | int | Tensor,
     ) -> Tensor:
-        return Tensor(x=self.x != jax_casting(x=other))
+        return Tensor(x=self.x != other, require_gradient=False)
 
     def __pow__(
         self,
-        other: Tensor | int | float,
+        other: float | int | Tensor,
     ) -> Tensor:
-        return Tensor(x=self.x ** jax_casting(x=other))
+        if isinstance(other, Tensor):
+            return Tensor(
+                x=self.x**other.x,
+                require_gradient=False,
+            )
+        else:
+            return Power(exponent=other)(self)
 
     def __radd__(
         self,
-        other: Tensor | int | float,
+        other: float | int,
     ) -> Tensor:
-        return Add()(tensor_casting(x=other), self)
+        return Add()(self, other)
 
     def __req__(
         self,
-        other: Tensor | int | float,
+        other: float | int,
     ) -> Tensor:
-        return Tensor(x=jax_casting(x=other) == self.x)
+        return Tensor(x=other == self.x, require_gradient=False)
 
     def __rfloordiv__(
         self,
-        other: Tensor | int,
+        other: int,
     ) -> Tensor:
-        return Tensor(x=jax_casting(x=other) // self.x)
+        return Tensor(x=other // self.x, require_gradient=False)
 
     def __rge__(
         self,
-        other: Tensor | int | float,
+        other: float | int,
     ):
-        return Tensor(x=jax_casting(x=other) >= self.x)
+        return Tensor(x=other >= self.x, require_gradient=False)
 
     def __rgt__(
         self,
-        other: Tensor | int | float,
+        other: float | int,
     ):
-        return Tensor(x=jax_casting(x=other) > self.x)
+        return Tensor(x=other > self.x, require_gradient=False)
 
     def __rle__(
         self,
-        other: Tensor | int | float,
+        other: float | int,
     ):
-        return Tensor(x=jax_casting(x=other) <= self.x)
+        return Tensor(x=other <= self.x, require_gradient=False)
 
     def __rlt__(
         self,
-        other: Tensor | int | float,
+        other: float | int,
     ):
-        return Tensor(x=jax_casting(x=other) < self.x)
+        return Tensor(x=other < self.x, require_gradient=False)
 
     def __rmod__(
         self,
-        other: Tensor | int,
+        other: int,
     ) -> Tensor:
-        return Tensor(x=jax_casting(x=other) % self.x)
+        return Tensor(x=other % self.x, require_gradient=False)
 
     def __rmul__(
         self,
-        other: Tensor | int | float,
+        other: float | int,
     ) -> Tensor:
-        return Multiply()(tensor_casting(x=other), self)
+        return Multiply()(self, other)
 
     def __rsub__(
         self,
-        other: Tensor | int | float,
+        other: float | int,
     ) -> Tensor:
-        return Add()(tensor_casting(x=other), Negative()(self))
+        return Add()(Negative()(self), other)
 
     def __rtruediv__(
         self,
-        other: Tensor | int | float,
+        other: float | int,
     ) -> Tensor:
-        return Multiply()(tensor_casting(x=other), Inverse()(self))
+        return Multiply()(Inverse()(self), other)
 
     def __setitem__(self, key, value) -> None:
-        self.x = self.x.at[key].set(jax_casting(x=value))
+        self.x = self.x.at[key].set(value.x if isinstance(value, Tensor) else value)
 
     def __str__(self) -> str:
-        return self.x.__repr__()
+        return str(self.x)
 
     def __sub__(
         self,
-        other: Tensor | int | float,
+        other: float | int | Tensor,
     ) -> Tensor:
-        return Add()(self, Negative()(tensor_casting(x=other)))
+        return Add()(self, Negative()(other) if isinstance(other, Tensor) else -(other))
 
     def __truediv__(
         self,
-        other: Tensor | int | float,
+        other: float | int | Tensor,
     ) -> Tensor:
-        return Multiply()(self, Inverse()(tensor_casting(x=other)))
+        return Multiply()(
+            self, Inverse()(other) if isinstance(other, Tensor) else (1.0 / other)
+        )
 
-    def all(self, axis: int) -> Tensor:
-        # if axis is None, return a scalar
-        return Tensor(x=jax.numpy.all(self.x, axis=axis))
+    @typing.overload
+    def all(self) -> bool: ...
+    @typing.overload
+    def all(self, axis: int) -> Tensor: ...
+    def all(self, axis: int = None) -> bool | Tensor:
+        """Check if all elements are true.
 
-    def any(self, axis: int) -> Tensor:
-        return Tensor(x=jax.numpy.any(self.x, axis=axis))
+        :param axis: The axis to be checked.
+        :type axis: int, optional
+
+        :return: Whether all elements are true.
+        :rtype: bool | Tensor
+        """
+        if axis is None:
+            return bool(jax.numpy.all(self.x))
+        return Tensor(
+            x=jax.numpy.all(
+                self.x,
+                axis=axis,
+            ),
+            require_gradient=False,
+        )
+
+    @typing.overload
+    def any(self) -> bool: ...
+    @typing.overload
+    def any(self, axis: int) -> Tensor: ...
+    def any(self, axis: int = None) -> bool | Tensor:
+        """Check if any element is true.
+
+        :param axis: The axis to be checked.
+        :type axis: int, optional
+
+        :return: Whether any element is true.
+        :rtype: bool | Tensor
+        """
+        if axis is None:
+            return bool(jax.numpy.any(self.x))
+        return Tensor(
+            x=jax.numpy.any(
+                self.x,
+                axis=axis,
+            ),
+            require_gradient=False,
+        )
 
     @staticmethod
     def arange(
@@ -594,14 +852,45 @@ class Tensor(object):
         step: int,
         datatype: Tensor.DataType,
     ) -> Tensor:
+        """Create a tensor with a range of values.
+
+        :param start: The start of the range.
+        :type start: int
+        :param stop: The stop of the range.
+        :type stop: int
+        :param step: The step of the range.
+        :type step: int
+        :param datatype: The data type.
+        :type datatype: Tensor.DataType
+
+        :return: The tensor with a range of values.
+        :rtype: Tensor
+        """
         return Tensor(
-            x=jax.numpy.arange(start=start, stop=stop, step=step, dtype=datatype.value)
+            x=jax.numpy.arange(start=start, stop=stop, step=step, dtype=datatype.value),
+            require_gradient=False,
         )
 
     def argmax(self, axis: int) -> Tensor:
-        return Tensor(x=jax.numpy.argmax(self.x, axis=axis))
+        """Return the indices of the maximum values along an axis.
+
+        :param axis: The axis to be checked.
+        :type axis: int
+
+        :return: The indices of the maximum values along an axis.
+        :rtype: Tensor
+        """
+        return Tensor(x=jax.numpy.nanargmax(self.x, axis=axis))
 
     def argsort(self, axis: int) -> Tensor:
+        """Return the indices that would sort an array.
+
+        :param axis: The axis to be checked.
+        :type axis: int
+
+        :return: The indices that would sort an array.
+        :rtype: Tensor
+        """
         return Tensor(x=jax.numpy.argsort(self.x, axis=axis))
 
     @staticmethod
@@ -610,21 +899,54 @@ class Tensor(object):
         datatype: DataType,
         require_gradient: bool = False,
     ) -> Tensor:
+        """Create a tensor from a list.
+
+        :param x: The list.
+        :type x: List[any]
+        :param datatype: The data type.
+        :type datatype: Tensor.DataType
+
+        :return: The tensor.
+        :rtype: Tensor
+        """
         return Tensor(
-            x=jax.numpy.array(x, dtype=datatype.value),
+            x=jax.numpy.array(
+                x,
+                dtype=datatype.value,
+            ),
             require_gradient=require_gradient,
         )
 
     def astype(self, datatype: Tensor.DataType) -> Tensor:
-        return Tensor(x=self.x.astype(datatype.value))
+        """Return a tensor with a specified data type.
 
-    def backward(self, gradient: Tensor = None) -> Tensor:
-        if gradient is None:
-            gradient = Tensor.full(shape=self.shape, value=1.0, datatype=self.datatype)
+        :param datatype: The data type.
+        :type datatype: Tensor.DataType
+
+        :return: The tensor with a specified data type.
+        :rtype: Tensor
+        """
+        return Tensor(
+            x=self.x.astype(datatype.value),
+            require_gradient=self.require_gradient,
+        )
+
+    def backward(self, gradient: Tensor) -> Tensor:
+        """Backward function for backpropagation.
+
+        :param gradient: The gradient.
+        :type gradient: Tensor, optional
+
+        :return: The tensor.
+        :rtype: Tensor
+        """
         self.gradient = gradient if self.gradient is None else self.gradient + gradient
         for hook in self.hook:
             hook.tensor.backward(
-                gradient=hook.gradient_function(gradient=gradient),
+                gradient=hook.gradient_function(
+                    tensor=hook.tensor,
+                    gradient=gradient,
+                ),
             )
         return self
 
@@ -632,12 +954,26 @@ class Tensor(object):
     def concatenate(
         tensors: typing.Sequence[Tensor],
         axis: int,
+        require_gradient: bool = False,
     ) -> Tensor:
+        """Concatenate tensors along an axis.
+
+        :param tensors: The tensors to be concatenated.
+        :type tensors: Sequence[Tensor]
+        :param axis: The axis to be concatenated.
+        :type axis: int
+        :param require_gradient: Whether the tensor requires gradient.
+        :type require_gradient: bool, default=False
+
+        :return: The concatenated tensor.
+        :rtype: Tensor
+        """
         return Tensor(
             x=jax.numpy.concatenate(
                 arrays=[array.x for array in tensors],
                 axis=axis,
             ),
+            require_gradient=require_gradient,
         )
 
     def count_nonzero(
@@ -645,32 +981,77 @@ class Tensor(object):
         axis: int,
         keep_dimension: bool,
     ) -> Tensor:
+        """Count the number of non-zero elements.
+
+        :param axis: The axis to be checked.
+        :type axis: int
+        :param keep_dimension: Whether to keep the dimension.
+        :type keep_dimension: bool
+
+        :return: The number of non-zero elements.
+        :rtype: Tensor
+        """
         return Tensor(
             x=jax.numpy.count_nonzero(
                 self.x,
                 axis=axis,
                 keepdims=keep_dimension,
             ),
+            require_gradient=False,
+        )
+
+    def cumulative_product(
+        self,
+        axis: int,
+    ) -> Tensor:
+        """Return the cumulative product of elements along an axis.
+
+        :param axis: The axis to be checked.
+        :type axis: int
+
+        :return: The cumulative product of elements along an axis.
+        :rtype: Tensor
+        """
+        return Tensor(
+            x=jax.numpy.cumprod(self.x, axis=axis),
+            require_gradient=False,
         )
 
     @property
     def datatype(self) -> Tensor.DataType:
+        """Return the data type of the tensor."""
         return {
             jax.numpy.dtype("bool"): Tensor.DataType.BOOL,
-            jax.numpy.dtype("int16"): Tensor.DataType.INT16,
-            jax.numpy.dtype("int32"): Tensor.DataType.INT32,
-            jax.numpy.dtype("int64"): Tensor.DataType.INT64,
+            jax.numpy.dtype("int8"): Tensor.DataType.INT8,
             jax.numpy.dtype("float16"): Tensor.DataType.FLOAT16,
             jax.numpy.dtype("float32"): Tensor.DataType.FLOAT32,
             jax.numpy.dtype("float64"): Tensor.DataType.FLOAT64,
+            jax.numpy.dtype("int16"): Tensor.DataType.INT16,
+            jax.numpy.dtype("int32"): Tensor.DataType.INT32,
+            jax.numpy.dtype("int64"): Tensor.DataType.INT64,
         }[self.x.dtype]
 
     @staticmethod
     def diagonal(
-        value: int | float,
+        value: float | int,
         size: int,
         datatype: Tensor.DataType,
+        require_gradient: bool = False,
     ) -> Tensor:
+        """Create a tensor with diagonal values.
+
+        :param value: The diagonal value.
+        :type value: float | int
+        :param size: The size of the tensor.
+        :type size: int
+        :param datatype: The data type.
+        :type datatype: Tensor.DataType
+        :param require_gradient: Whether the tensor requires gradient.
+        :type require_gradient: bool, default=False
+
+        :return: The tensor with diagonal values.
+        :rtype: Tensor
+        """
         return Tensor(
             x=jax.numpy.fill_diagonal(
                 a=jax.numpy.zeros(
@@ -680,25 +1061,46 @@ class Tensor(object):
                 val=value,
                 inplace=False,
             ),
+            require_gradient=require_gradient,
         )
 
     def exp(self) -> Tensor:
-        return Tensor(x=jax.numpy.exp(self.x))
+        """Exponential function."""
+        return Exponential()(self)
 
     def expand_dimension(
         self,
         *axis: int,
     ) -> Tensor:
+        """Expand the dimension of a tensor.
+
+        :param axis: The axis to be expanded.
+        :type axis: Tuple[int]
+
+        :return: The tensor with expanded dimension.
+        :rtype: Tensor
+        """
         return ExpandDimension(*axis)(self)
 
     @staticmethod
     def full(
         shape: typing.Tuple[int],
-        value: int | float,
+        value: float | int,
         datatype: Tensor.DataType,
-        require_gradient: bool = False,
     ) -> Tensor:
-        if isinstance(value, Tensor.Value):
+        """Create a tensor with a constant value.
+
+        :param shape: The shape of the tensor.
+        :type shape: Tuple[int]
+        :param value: The constant value.
+        :type value: float | int
+        :param datatype: The data type.
+        :type datatype: Tensor.DataType
+
+        :return: The tensor with a constant value.
+        :rtype: Tensor
+        """
+        if isinstance(value, Tensor.Constant):
             value = value.value
         return Tensor(
             x=jax.numpy.full(
@@ -706,25 +1108,29 @@ class Tensor(object):
                 fill_value=value,
                 dtype=datatype.value,
             ),
-            require_gradient=require_gradient,
+            require_gradient=False,
         )
 
     def get_sample_x_and_y(
         self,
         number_of_target: int,
-    ) -> typing.Tuple[Tensor, Tensor, Tensor]:
+    ) -> typing.Tuple[Tensor, Tensor]:
+        """Get the sample of x and y.
+
+        :param number_of_target: The number of target.
+        :type number_of_target: int
+
+        :return: The sample of x and y.
+        :rtype: Tuple[Tensor, Tensor]
+        """
         return (
             Tensor(
-                x=self.x[
-                    ...,
-                    number_of_target:,
-                ],
+                x=self.x[..., number_of_target:],
+                require_gradient=False,
             ),
             Tensor(
-                x=self.x[
-                    ...,
-                    :number_of_target,
-                ],
+                x=self.x[..., :number_of_target],
+                require_gradient=False,
             ),
         )
 
@@ -734,8 +1140,16 @@ class Tensor(object):
         # (B...,)
         indexes: Tensor,
     ) -> Tensor:
+        """Get the values by index.
+
+        :param indexes: The indexes.
+        :type indexes: Tensor
+
+        :return: The values by index.
+        :rtype: Tensor
+        """
         # (max{A..., B...}, index)
-        answer: jaxlib.xla_extension.ArrayImpl = 1 * (
+        selection: jaxlib.xla_extension.ArrayImpl = 1 * (
             # (A..., index)
             (
                 # (index,)
@@ -771,20 +1185,29 @@ class Tensor(object):
                 (
                     # Turn 0 to nan
                     # (max{A..., B...}, index)
-                    (answer / answer)
+                    (selection / selection)
                 )
                 * (
                     # (A..., index)
                     self.x
                 ),
                 axis=-1,
-            )
+            ),
+            require_gradient=False,
         ).astype(self.datatype)
 
     def in_sample(
         self,
         in_sample_size: int,
     ) -> Tensor:
+        """Get the in-sample data.
+
+        :param in_sample_size: The size of the in-sample data.
+        :type in_sample_size: int
+
+        :return: The in-sample data.
+        :rtype: Tensor
+        """
         return Tensor(
             x=self.x[
                 # ...
@@ -793,15 +1216,28 @@ class Tensor(object):
                 :in_sample_size,
                 # Target and factor
                 :,
-            ]
+            ],
+            require_gradient=False,
         )
 
     def insert(
         self,
         index: int,
-        value: int | float,
+        value: float | int,
         axis: int,
     ) -> Tensor:
+        """Insert a value into a tensor.
+
+        :param index: The index.
+        :type index: int
+        :param value: The value.
+        :type value: float | int
+        :param axis: The axis.
+        :type axis: int
+
+        :return: The tensor with the value inserted.
+        :rtype: Tensor
+        """
         return Tensor(
             x=jax.numpy.insert(
                 arr=self.x,
@@ -809,35 +1245,61 @@ class Tensor(object):
                 values=value,
                 axis=axis,
             ),
+            require_gradient=False,
         )
 
     def inverse(
         self,
     ) -> Tensor:
+        """Return the inverse of the tensor.
+
+        :return: The inverse of the tensor.
+        :rtype: Tensor
+        """
         return Tensor(
-            x=jax.numpy.linalg.inv(
-                self.x,
-            ),
+            x=jax.numpy.linalg.inv(self.x),
+            require_gradient=False,
         )
 
     def isnan(self) -> Tensor:
+        """Check if the tensor is nan.
+
+        :return: The tensor with nan values.
+        :rtype: Tensor
+        """
         return Tensor(
             x=jax.numpy.isnan(self.x),
+            require_gradient=False,
         )
 
     @staticmethod
     def load(
         source: str,
     ) -> Tensor:
+        """Load a tensor from a file.
+
+        :param source: The source file.
+        :type source: str
+
+        :return: The tensor.
+        :rtype: Tensor
+        """
         return Tensor(
             x=jax.numpy.load(
                 file=source,
             ),
+            require_gradient=False,
         )
 
     def log2(self) -> Tensor:
+        """Logarithm base 2 function.
+
+        :return: The logarithm base 2 of the tensor.
+        :rtype: Tensor
+        """
         return Tensor(
             x=jax.numpy.log2(self.x),
+            require_gradient=False,
         )
 
     def mean(
@@ -845,30 +1307,82 @@ class Tensor(object):
         axis: int,
         keep_dimension: bool,
     ) -> Tensor:
-        return Tensor(x=jax.numpy.mean(self.x, axis=axis, keepdims=keep_dimension))
+        """Return the mean of the tensor.
 
-    def nanmean(self, axis: int, keep_dimension: bool) -> Tensor:
-        return Tensor(x=jax.numpy.nanmean(self.x, axis=axis, keepdims=keep_dimension))
+        :param axis: The axis to be checked.
+        :type axis: int
+        :param keep_dimension: Whether to keep the dimension.
+        :type keep_dimension: bool
+
+        :return: The mean of the tensor.
+        :rtype: Tensor
+        """
+        return Tensor(
+            x=jax.numpy.mean(self.x, axis=axis, keepdims=keep_dimension),
+            require_gradient=False,
+        )
+
+    def nanmean(
+        self,
+        axis: int,
+        keep_dimension: bool,
+    ) -> Tensor:
+        """Return the mean of the tensor with NAN.
+
+        :param axis: The axis to be checked.
+        :type axis: int
+        :param keep_dimension: Whether to keep the dimension.
+        :type keep_dimension: bool
+
+        :return: The mean of the tensor.
+        :rtype: Tensor
+        """
+        return Tensor(
+            x=jax.numpy.nanmean(self.x, axis=axis, keepdims=keep_dimension),
+            require_gradient=False,
+        )
 
     def nansum(
         self,
         axis: int,
         keep_dimension: bool,
     ) -> Tensor:
+        """Return the sum of the tensor with NAN.
+
+        :param axis: The axis to be checked.
+        :type axis: int
+        :param keep_dimension: Whether to keep the dimension.
+        :type keep_dimension: bool
+
+        :return: The sum of the tensor.
+        :rtype: Tensor"""
         return Tensor(
             x=jax.numpy.nansum(
                 a=self.x,
                 axis=axis,
                 keepdims=keep_dimension,
             ),
+            require_gradient=False,
         )
 
     def nan_to_num(
         self,
-        nan: int | float,
-        posinf: int | float,
-        neginf: int | float,
+        nan: float | int,
+        posinf: float | int,
+        neginf: float | int,
     ) -> Tensor:
+        """Replace NaN with zero and infinity with large finite numbers.
+
+        :param nan: The value to replace NaN.
+        :type nan: float | int
+        :param posinf: The value to replace positive infinity.
+        :type posinf: float | int
+        :param neginf: The value to replace negative infinity.
+        :type neginf: float | int
+
+        :return: The tensor with NaN replaced.
+        :rtype: Tensor
+        """
         return Tensor(
             x=jax.numpy.nan_to_num(
                 x=self.x,
@@ -876,16 +1390,30 @@ class Tensor(object):
                 posinf=posinf,
                 neginf=neginf,
             ),
+            require_gradient=False,
         )
 
     @property
     def number_of_dimension(self) -> int:
+        """Return the number of dimensions of the tensor.
+
+        :return: The number of dimensions of the tensor.
+        :rtype: int
+        """
         return jax.numpy.ndim(self.x)
 
     def out_of_sample(
         self,
         in_sample_size: int,
     ) -> Tensor:
+        """Get the out-of-sample data.
+
+        :param in_sample_size: The size of the in-sample data.
+        :type in_sample_size: int
+
+        :return: The out-of-sample data.
+        :rtype: Tensor
+        """
         return Tensor(
             x=self.x[
                 # ...
@@ -894,20 +1422,31 @@ class Tensor(object):
                 in_sample_size:,
                 # Target and factor
                 :,
-            ]
+            ],
+            require_gradient=False,
         )
 
     @staticmethod
     def random_integer(
         shape: typing.Tuple[int],
-        # inclusive
         minimum_value: int,
-        # exclusive
         maximum_value: int,
         datatype: Tensor.DataType,
-        require_gradient: bool,
         seed: int,
     ) -> Tensor:
+        """Create a tensor with uniformlly distributed random integer values.
+
+        :param shape: The shape of the tensor.
+        :type shape: Tuple[int]
+        :param minimum_value: The minimum value (inclusive).
+        :type minimum_value: int
+        :param maximum_value: The maximum value (exclusive).
+        :type maximum_value: int
+        :param datatype: The data type.
+        :type datatype: Tensor.DataType
+        :param seed: The seed for random number generation.
+        :type seed: int
+        """
         return Tensor(
             x=jax.random.randint(
                 jax.random.PRNGKey(
@@ -918,36 +1457,60 @@ class Tensor(object):
                 maxval=maximum_value,
                 dtype=datatype.value,
             ),
-            require_gradient=require_gradient,
+            require_gradient=False,
         )
 
     @staticmethod
     def random_normal(
         shape: typing.Tuple[int],
         datatype: Tensor.DataType,
-        require_gradient: bool,
         seed: int,
     ) -> Tensor:
+        """Create a tensor with normally distributed random values.
+
+        :param shape: The shape of the tensor.
+        :type shape: Tuple[int]
+        :param datatype: The data type.
+        :type datatype: Tensor.DataType
+        :param seed: The seed for random number generation.
+        :type seed: int
+
+        :return: The tensor with normally distributed random values.
+        :rtype: Tensor
+        """
         return Tensor(
             x=jax.random.normal(
                 key=jax.random.PRNGKey(seed),
                 shape=shape,
                 dtype=datatype.value,
             ),
-            require_gradient=require_gradient,
+            require_gradient=False,
         )
 
     @staticmethod
     def random_uniform(
         shape: typing.Tuple[int],
-        # inclusive
         minimum_value: int,
-        # exclusive
         maximum_value: int,
         datatype: Tensor.DataType,
-        require_gradient: bool,
         seed: int,
     ) -> Tensor:
+        """Create a tensor with uniformly distributed random values.
+
+        :param shape: The shape of the tensor.
+        :type shape: Tuple[int]
+        :param minimum_value: The minimum value (inclusive).
+        :type minimum_value: int
+        :param maximum_value: The maximum value (exclusive).
+        :type maximum_value: int
+        :param datatype: The data type.
+        :type datatype: Tensor.DataType
+        :param seed: The seed for random number generation.
+        :type seed: int
+
+        :return: The tensor with uniformly distributed random values.
+        :rtype: Tensor
+        """
         return Tensor(
             x=jax.random.uniform(
                 key=jax.random.PRNGKey(seed),
@@ -956,91 +1519,180 @@ class Tensor(object):
                 maxval=maximum_value,
                 dtype=datatype.value,
             ),
-            require_gradient=require_gradient,
+            require_gradient=False,
         )
+
+    def relu(self) -> Tensor:
+        """Rectified linear unit function.
+
+        :return: The tensor with rectified linear unit function.
+        :rtype: Tensor
+        """
+        return Where(condition=self > 0.0)(self, 0.0)
 
     def reshape(
         self,
         *shape: int,
     ) -> Tensor:
+        """Reshape the tensor.
+
+        :param shape: The shape.
+        :type shape: Tuple[int]
+
+        :return: The tensor with reshaped shape.
+        :rtype: Tensor
+        """
         return Tensor(
             x=jax.numpy.reshape(
                 a=self.x,
                 newshape=shape,
             ),
+            require_gradient=False,
         )
 
     def save(
         self,
         destination: str,
-    ) -> None:
+    ) -> typing.Self:
+        """Save the tensor to a file.
+
+        :param destination: The destination file.
+        :type destination: str
+
+        :return: The tensor itself.
+        :rtype: Tensor
+        """
+        # Save the tensor to a file
         jax.numpy.save(
             file=destination,
             arr=self.x,
         )
         try:
+            # Remove the file if it exists
             os.remove(destination)
         except OSError:
             pass
+        # Rename the file
         os.rename(
             f"{destination}.npy",
             destination,
         )
+        return self
 
     @property
     def shape(self) -> typing.Tuple[int]:
+        """Return the shape of the tensor.
+
+        :return: The shape of the tensor.
+        :rtype: Tuple[int]
+        """
         return self.x.shape
 
     def sign(self) -> Tensor:
+        """Sign function.
+
+        :return: The sign of the tensor.
+        :rtype: Tensor
+        """
         return Tensor(
             x=jax.numpy.sign(self.x),
+            require_gradient=False,
         )
 
     def sigmoid(self) -> Tensor:
+        """Sigmoid function.
+
+        :return: The sigmoid of the tensor.
+        :rtype: Tensor
+        """
         return 1.0 / (1.0 + self.exp())
 
     def sliding_window(
         self,
         window_size: int,
     ) -> Tensor:
+        """Create a sliding window.
+
+        :param window_size: The window size.
+        :type window_size: int
+
+        :return: The sliding window.
+        :rtype: Tensor
+        """
         # (..., Batch, Window, Target and factor)
-        return (
-            # (..., Batch, Target and factor, Window)
-            Tensor(
-                x=numpy.lib.stride_tricks.sliding_window_view(
+        return Tensor(
+            x=(
+                # (..., Batch, Target and factor, Window)
+                numpy.lib.stride_tricks.sliding_window_view(
                     # (..., Observation, Target and factor)
                     x=self.x,
                     window_shape=window_size,
                     # Observation
                     axis=-2,
-                ),
-            )
-        ).swapaxes(
-            # Batch
-            -1,
-            # Target and factor
-            -2,
+                )
+            ).swapaxes(
+                # Target and factor
+                -1,
+                # Batch
+                -2,
+            ),
+            require_gradient=False,
         )
 
     def sort(
         self,
         axis: int,
     ) -> Tensor:
+        """Sort the tensor.
+
+        :param axis: The axis to be sorted.
+        :type axis: int
+        """
         return Tensor(
             x=jax.numpy.sort(
                 self.x,
                 axis=axis,
             ),
+            require_gradient=False,
         )
 
     def sqrt(self) -> Tensor:
-        return Tensor(
-            x=jax.numpy.sqrt(self.x),
-        )
+        """Square root function.
+
+        :return: The square root of the tensor.
+        :rtype: Tensor
+        """
+        return Power(exponent=0.5)(self)
 
     def square(self) -> Tensor:
+        """Square function.
+
+        :return: The square of the tensor.
+        :rtype: Tensor
+        """
+        return Power(exponent=2)(self)
+
+    @staticmethod
+    def stack(
+        tensors: typing.List[Tensor],
+        axis: int,
+    ) -> Tensor:
+        """Stack tensors along an axis.
+
+        :param tensors: The tensors to be stacked.
+        :type tensors: List[Tensor]
+        :param axis: The axis to be stacked.
+        :type axis: int
+
+        :return: The stacked tensor.
+        :rtype: Tensor
+        """
         return Tensor(
-            x=jax.numpy.square(self.x),
+            x=jax.numpy.stack(
+                arrays=[tensor.x for tensor in tensors],
+                axis=axis,
+            ),
+            require_gradient=False,
         )
 
     def std(
@@ -1048,12 +1700,23 @@ class Tensor(object):
         axis: int,
         keep_dimension: bool,
     ) -> Tensor:
+        """Return the standard deviation of the tensor.
+
+        :param axis: The axis to be checked.
+        :type axis: int
+        :param keep_dimension: Whether to keep the dimension.
+        :type keep_dimension: bool
+
+        :return: The standard deviation of the tensor.
+        :rtype: Tensor
+        """
         return Tensor(
             x=jax.numpy.std(
                 self.x,
                 axis=axis,
                 keepdims=keep_dimension,
             ),
+            require_gradient=False,
         )
 
     def sum(
@@ -1061,12 +1724,23 @@ class Tensor(object):
         axis: int,
         keep_dimension: bool,
     ) -> Tensor:
+        """Return the sum of the tensor.
+
+        :param axis: The axis to be checked.
+        :type axis: int
+        :param keep_dimension: Whether to keep the dimension.
+        :type keep_dimension: bool
+
+        :return: The sum of the tensor.
+        :rtype: Tensor
+        """
         return Tensor(
             x=jax.numpy.sum(
                 self.x,
                 axis=axis,
                 keepdims=keep_dimension,
             ),
+            require_gradient=False,
         )
 
     def swapaxes(
@@ -1074,17 +1748,93 @@ class Tensor(object):
         axis1: int,
         axis2: int,
     ) -> Tensor:
+        """Swap the axes of the tensor.
+
+        :param axis1: The first axis.
+        :type axis1: int
+        :param axis2: The second axis.
+        :type axis2: int
+
+        :return: The tensor with swapped axes.
+        :rtype: Tensor
+        """
         axis = list(range(self.number_of_dimension))
         axis[axis1], axis[axis2] = axis[axis2], axis[axis1]
         return self.transpose(*axis)
 
-    def tolist(self) -> typing.List[typing.Any]:
+    def to_list(self) -> typing.List[typing.Any]:
+        """Convert the tensor to a list.
+
+        :return: The list.
+        :rtype: List[any]
+        """
         return jax.numpy.asarray(self.x).tolist()
 
+    def to_numpy(self) -> numpy.ndarray:
+        """Convert the tensor to a numpy array.
+
+        :return: The numpy array.
+        :rtype: numpy.ndarray
+        """
+        return jax.numpy.asarray(self.x)
+
     def transpose(self, *index: int) -> Tensor:
+        """Transpose the tensor.
+
+        :param index: The index.
+        :type index: Tuple[int]
+
+        :return
+        :rtype: Tensor"""
         return Transpose(*index)(self)
 
-    def unique(self) -> Tensor:
-        return Tensor(
-            x=jax.numpy.unique(self.x),
+    def unique(self) -> typing.Tuple[Tensor, Tensor]:
+        """Return the unique values and the count of the unique values.
+
+        :return: The unique values and the count of the unique values.
+        :rtype: Tuple[Tensor, Tensor]
+        """
+        unique, count = jax.numpy.unique(self.x, return_counts=True)
+        return (
+            Tensor(
+                x=unique,
+                require_gradient=False,
+            ),
+            Tensor(
+                x=count,
+                require_gradient=False,
+            ),
         )
+
+    @staticmethod
+    def where(
+        condition: Tensor,
+        if_true: Tensor,
+        if_false: Tensor,
+    ) -> Tensor:
+        """Return elements, either from x or y, depending on condition.
+
+        :param condition: The condition.
+        :type condition: Tensor
+        :param if_true: The tensor if_true.
+        :type if_true: Tensor
+        :param if_false: The tensor if_false.
+        :type if_false: Tensor
+        """
+        return Where(condition)(if_true, if_false)
+
+
+class Parameter(Tensor):
+    def __init__(
+        self,
+        x: Tensor | numpy.ndarray | typing.Any,
+    ) -> None:
+        Tensor.__init__(
+            self,
+            x=x,
+        )
+        self.require_gradient: bool = True
+
+    def detach(self) -> None:
+        self.gradient: Tensor = None
+        self.hook: typing.List[Hook] = []

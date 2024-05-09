@@ -3,8 +3,10 @@ TODO
 .vscode/
 
 # Data
+*.bin
 *.csv
 *.bin
+example/
 
 # Python
 __pycache__/
@@ -12,3 +14,6 @@ HoiSaAI.egg-info/
 dist/
 *.ipynb
 .pypirc
+
+# Sphinx
+docs/
